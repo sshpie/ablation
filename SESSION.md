@@ -14,8 +14,20 @@ Live VM: telnet 127.0.0.1:4070 (serial console), admin / Admin1234!
 | F-FTD-103 | CRIT/HIGH | ftd_sfdc_zmq_rep.py | SFDataCorrelator ZMQ REP NULL auth on port 5501 |
 | F-FTD-104 | HIGH | ftd_estreamer_unauth.py | sfestreamer eStreamer potential unauthenticated TLS access (port 8302) |
 | F-FTD-105 | HIGH | ftd_fdm_local_auth_bypass.py | FDM Spring Security 127.0.0.1 exempt → full REST API unauth from localhost |
+| F-FTD-106 | CRITICAL | ftd_jwt_forge.py | FDM JWT forgery via Neo4j-derived HS256 signing key — network admin access |
 
 ## Static Analysis Findings (new this session)
+
+### F-FTD-106: FDM JWT Token Forgery (CONFIRMED from source)
+- FDMJwtBuilder.getSecret(): `invokestatic EncryptionUtil.getEncryptionKeyBytesFromCache():[B`
+- Same AES-128 key from Neo4j (F-FTD-102) used as HS256 HMAC signing secret
+- JWT claims required: `iss="Cisco-FDM"`, `tokenType="JWT_Access"`, `origin="password"`,
+  `username`, `userRole` (must match Neo4j UserRole.name node), `userUuid`, `accessTokenExpiresAt` (ms)
+- Algorithm: HS256 (`SignatureAlgorithm.HS256` static initializer in FDMJwtBuilder)
+- OAuthTokenRepository token revocation check SKIPPED for `origin="password"` tokens
+  (only "custom" origin tokens are checked against DB)
+- Impact: forge admin JWT from ANY network source (not limited to 127.0.0.1 like F-FTD-105)
+- userRole string: retrieve via /identity/users via AJP (F-FTD-105) or Neo4j strings grep
 
 ### F-FTD-105: FDM Local Authentication Bypass (CONFIRMED from source)
 - FdmProdWebSecurityConfigurer.java (6.7.0 + 7.0.0):
