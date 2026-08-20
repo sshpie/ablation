@@ -138,6 +138,15 @@ Live VM: telnet 127.0.0.1:4070 (serial console), admin / Admin1234!
 - AJP Accept header bug confirmed: any Accept: header → 500
 - eventing_probe.txt: /tmp/claude-1000/.../scratchpad/eventing_probe.txt
 
+## Key System Facts (confirmed this session)
+
+### pmtool service management
+- `pmtool restartbytype ngfwWebUi` — restarts FDM/Tomcat only (confirmed via Cisco AI)
+- `pmtool status` — list all processes
+- `system support diagnostic-cli` — drops to Linux shell from CLISH
+- No kill -9 needed for clean Tomcat restart; pmtool handles it
+- Ablation modules updated to use pmtool instead of kill -9 for cleaner restart
+
 ## Blocked / Pending
 
 ### F-FTD-106: AES Key Recovery — IN PROGRESS
