@@ -15,8 +15,25 @@ Live VM: telnet 127.0.0.1:4070 (serial console), admin / Admin1234!
 | F-FTD-104 | HIGH | ftd_estreamer_unauth.py | sfestreamer eStreamer potential unauthenticated TLS access (port 8302) |
 | F-FTD-105 | HIGH | ftd_fdm_local_auth_bypass.py | FDM Spring Security 127.0.0.1 exempt → full REST API unauth from localhost |
 | F-FTD-106 | CRITICAL | ftd_jwt_forge.py | FDM JWT forgery via Neo4j-derived HS256 signing key — network admin access |
+| F-FTD-107 | CRITICAL | ftd_backup_tarslip.py | TAR slip in FDM backup restore — arbitrary file write → RCE |
 
 ## Static Analysis Findings (new this session)
+
+### F-FTD-107: TAR Slip in Backup Restore (CONFIRMED from bytecode — CWE-22)
+- NGFWFileUtils.extractTarArchive(): `new File(destDir, entry.getName())` with NO canonical path check
+- RestoreImmediateJob.extractArchive(): calls extractTarArchive with `filePattern=null` → extracts ALL TAR entries
+- Attack chain:
+  1. Craft outer TAR: valid manifest + inner `.bin` archive containing traversal entries
+  2. Upload via POST /action/uploadbackup (requires auth — use F-FTD-106 or F-FTD-105)
+     - processBackupFile() extracts manifest ONLY (pattern-filtered, safe) → validates format → stores TAR
+  3. Trigger restore: POST /action/restore {id: <backup-uuid>}
+     - RestoreImmediateJob → extractRootArchive() (manifest+bin with pattern) → extractArchive(binFile, null)
+     - binFile entries with `../` paths written to arbitrary filesystem locations
+- Impact: arbitrary file write as FDM Tomcat user → if root: cron/webshell/sudoers → full RCE
+- Key bytecodes:
+  - extractTarArchive byte 101-114: new File(destDir, entry.getName()) — no File.getCanonicalPath()
+  - extractTarArchive byte 250: new FileOutputStream(outputFile) — direct write
+  - RestoreImmediateJob.extractArchive byte 3: aconst_null (filePattern=null → all entries)
 
 ### F-FTD-106: FDM JWT Token Forgery (CONFIRMED from source)
 - FDMJwtBuilder.getSecret(): `invokestatic EncryptionUtil.getEncryptionKeyBytesFromCache():[B`
