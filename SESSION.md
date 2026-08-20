@@ -77,6 +77,36 @@ Live VM: telnet 127.0.0.1:4070 (serial console), admin / Admin1234!
   /devicesettings/default/managementips, /devices/default/action/ha/*, /license/**, /action/upgrade
 - Whitelist purpose: allow HA primary to push config changes to standby via authenticated session
 
+## New Modules This Session (pending commit)
+
+### F-FTD-109: cli_shadow NOPASSWD → root (HIGH)
+- File: modules/ftd_clishadow_root.py
+- /etc/sudoers: (root) NOPASSWD: /usr/local/sf/bin/cli_shadow
+- cli_shadow -u admin dumps SHA-512 shadow hash without password
+- Cracked: Admin123! (different from CLISH Admin1234! — isolation bypass)
+- Total time to root: <60s from SSH login
+- Enables: /proc/<pid>/mem reads of ALL processes → F-FTD-106 key extraction
+- Note: Linux and CLISH passwords intentionally separate (isolation design);
+  NOPASSWD cli_shadow eliminates that isolation for any CLI admin
+
+### F-FTD-110: Hardcoded AES-256-CBC key in Python encryption util (CRITICAL)
+- File: modules/ftd_hardcoded_aes_key.py
+- Source: /ngfw/cisco/sf_common_base/util/encryption_util.py
+- Passphrase: 'r4onxh8364&Jh^%P)Kqf65d6ev#^%#(&(;kuwtUTR-WQp%^#86'
+- Key: hashlib.sha256(passphrase).digest() — 32 bytes, AES-256-CBC
+- Static across ALL FTD/FMC deployments — fleet-wide ciphertext decryption
+- Combined with backup theft: offline plaintext recovery of any encrypted config
+
+### F-FTD-106 Ablation Module (CRITICAL)
+- File: modules/ftd_jwt_key_extraction.py
+- Complete forensic workflow: root via F-FTD-109 → kill Tomcat → scan heap
+- Key finding: AES-128 key exists as Java String BEFORE GC (scan window ~5-30s)
+- Three wave scan covers GC window: wave 0 (immediate), +3s, +6s
+- Oracle: GET /api/fdm/v6/object/users with forged JWT (F-FTD-105 localhost bypass)
+- Required JWT claims confirmed from bytecode: iss, sub, iat, exp, tokenType,
+  origin, username, userRole=ROLE_ADMIN, userUuid, accessTokenExpiresAt(ms)
+- LIVE extraction IN PROGRESS: restart + early-scan (pre-FDM-ready) running
+
 ## Static Analysis Findings (not yet committed)
 
 ### Port 5501 — SFDataCorrelator ZMQ REP
