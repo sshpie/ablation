@@ -12,6 +12,28 @@ Live VM: telnet 127.0.0.1:4070 (serial console), admin / Admin1234!
 | F-FTD-101 | HIGH | ftd_eventing_api_unauth.py | NGFWEventingApplication /eventing/api/v1/** unauth via AJP bypass |
 | F-FTD-102 | CRITICAL | ftd_neo4j_password_decrypt.py | FDM admin password decrypt via world-readable Neo4j AES key |
 | F-FTD-103 | CRIT/HIGH | ftd_sfdc_zmq_rep.py | SFDataCorrelator ZMQ REP NULL auth on port 5501 |
+| F-FTD-104 | HIGH | ftd_estreamer_unauth.py | sfestreamer eStreamer potential unauthenticated TLS access (port 8302) |
+| F-FTD-105 | HIGH | ftd_fdm_local_auth_bypass.py | FDM Spring Security 127.0.0.1 exempt → full REST API unauth from localhost |
+
+## Static Analysis Findings (new this session)
+
+### F-FTD-105: FDM Local Authentication Bypass (CONFIRMED from source)
+- FdmProdWebSecurityConfigurer.java (6.7.0 + 7.0.0):
+  `httpSecurity.authorizeRequests().antMatchers("/**").access("hasIpAddress('localhost') or hasIpAddress('127.0.0.1') or isAuthenticated()")`
+- AJP 8009 on ::1 loopback — local processes connect with 127.0.0.1 source → auth bypass
+- /api/fdm/v6/action/command (CLISH exec): POST with {"commandInput": "<cmd>", "timeOut": 30}
+  Command model: commandInput (String), commandOutput (String), timeOut (long)
+- /api/fdm/v6/identity/users: returns all user objects with encrypted passwords → F-FTD-102
+- WebSecurity.ignoring() paths (Spring Security fully excluded):
+  /api/versions, /api-explorer/**, /index.jsp, /failure.html, /assets/**/*, /help/fdm/**
+
+### HA Whitelist Analysis (RESOLVED — not an auth bypass)
+- FdmHaAccessFilter: only blocks WRITE operations to non-whitelisted paths on HA standby nodes
+- NOT an auth bypass — Spring Security still runs after this filter
+- 68+ whitelisted paths from 10 Spring context XML files (resources, users, smart-licensing, etc.)
+- Whitelisted paths include: /action/command, /object/users, /action/exportconfig, /action/backup,
+  /devicesettings/default/managementips, /devices/default/action/ha/*, /license/**, /action/upgrade
+- Whitelist purpose: allow HA primary to push config changes to standby via authenticated session
 
 ## Static Analysis Findings (not yet committed)
 
