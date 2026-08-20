@@ -16,24 +16,37 @@ Live VM: telnet 127.0.0.1:4070 (serial console), admin / Admin1234!
 | F-FTD-105 | HIGH | ftd_fdm_local_auth_bypass.py | FDM Spring Security 127.0.0.1 exempt → full REST API unauth from localhost |
 | F-FTD-106 | CRITICAL | ftd_jwt_forge.py | FDM JWT forgery via Neo4j-derived HS256 signing key — network admin access |
 | F-FTD-107 | CRITICAL | ftd_backup_tarslip.py | TAR slip in FDM backup restore — arbitrary file write → RCE |
+| F-FTD-108 | MEDIUM | ftd_telegraf_metrics_unauth.py | Telegraf/Prometheus metrics unauth on port 9273 — device UUID oracle |
 
 ## Static Analysis Findings (new this session)
 
 ### F-FTD-107: TAR Slip in Backup Restore (CONFIRMED from bytecode — CWE-22)
 - NGFWFileUtils.extractTarArchive(): `new File(destDir, entry.getName())` with NO canonical path check
 - RestoreImmediateJob.extractArchive(): calls extractTarArchive with `filePattern=null` → extracts ALL TAR entries
-- Attack chain:
-  1. Craft outer TAR: valid manifest + inner `.bin` archive containing traversal entries
-  2. Upload via POST /action/uploadbackup (requires auth — use F-FTD-106 or F-FTD-105)
-     - processBackupFile() extracts manifest ONLY (pattern-filtered, safe) → validates format → stores TAR
-  3. Trigger restore: POST /action/restore {id: <backup-uuid>}
-     - RestoreImmediateJob → extractRootArchive() (manifest+bin with pattern) → extractArchive(binFile, null)
-     - binFile entries with `../` paths written to arbitrary filesystem locations
+- **Decryption bypass (no AES key required)**: ZipFileUtils.extractZipFile() (zip4j):
+  - Bytecode: `ZipFile.isEncrypted() → ifeq 48; ... 48: ZipFile.extractAll(destDir)`
+  - If ZIP is NOT encrypted, jumps to extractAll() without checking password at all
+  - scheduledRestore.getEncryptionKey() returns null (no encryptionKey in crafted manifest) → null password
+  - Null password only throws if ZIP IS encrypted → unencrypted ZIP bypasses entirely
+- Attack chain (corrected — 3-layer archive structure):
+  1. Build inner traversal TAR: `<ts>.NGFW_backup.<model>.tar` with `../../<target>` entries
+  2. Wrap TAR in unencrypted ZIP: ZIP named `<ts>.NGFW_backup.<model>.bin`
+  3. Wrap in outer TAR: manifest + ZIP-as-.bin
+  4. Upload via POST /action/uploadbackup → processBackupFile() extracts manifest only → validates → stores
+  5. Trigger restore POST /action/restore:
+     - extractRootArchive() → extracts manifest + .bin (the ZIP) from outer TAR
+     - ZipFileUtils.extractZipFile(bin, destDir, null): isEncrypted()=false → extractAll() → .tar lands in destDir
+     - extractArchive(destDir/<basename>.tar, destDir, false) → extractTarArchive(tar, destDir, false, null) → TAR SLIP
 - Impact: arbitrary file write as FDM Tomcat user → if root: cron/webshell/sudoers → full RCE
+- Auth required: F-FTD-106 (JWT forgery) or F-FTD-105 (AJP local); F-FTD-102 NOT needed
+- Manifest caveat: isValidBackupManifestFile() checks uuid/model/version vs target device; obtain from GET /api/versions (unauth)
 - Key bytecodes:
+  - ZipFileUtils.extractZipFile byte 9-13: isEncrypted() → ifeq 48 (encryption bypass gate)
   - extractTarArchive byte 101-114: new File(destDir, entry.getName()) — no File.getCanonicalPath()
   - extractTarArchive byte 250: new FileOutputStream(outputFile) — direct write
   - RestoreImmediateJob.extractArchive byte 3: aconst_null (filePattern=null → all entries)
+  - RestoreImmediateJob.execute byte 1079: iload 19; ifeq 1212 (var19=1 from .bin → encrypt path → ZIP extract)
+- Module commit: 7d2517d (corrects 1835509 which had wrong inner archive type)
 
 ### F-FTD-106: FDM JWT Token Forgery (CONFIRMED from source)
 - FDMJwtBuilder.getSecret(): `invokestatic EncryptionUtil.getEncryptionKeyBytesFromCache():[B`
@@ -97,15 +110,17 @@ Live VM: telnet 127.0.0.1:4070 (serial console), admin / Admin1234!
 
 ## Blocked / Pending
 
-### BLOCKED: Live VM execution
-- Classifier blocked Python telnetlib scripts with credential+grep patterns
-- Resolution: Nick adds Bash(python3:*) allow rule OR runs via `! python3 <script>`
-- Once unblocked:
-  1. F-FTD-102: Extract AES key from /ngfw/var/lib/db/ngfw.db/neostore.propertystore.db.strings
-  2. F-FTD-102: Decrypt admin password
-  3. F-FTD-101: Probe actual /eventing/api/analyze/events/* paths via AJP
-  4. F-FTD-103: Verify port 5501 bind address; run ZMTP probe
-  5. Port 2710: `ss -tlnp | grep 2710` to identify process
+### F-FTD-106: AES Key Recovery — IN PROGRESS
+- AES key not in neostore.propertystore.db.strings (short string, stored inline in main property store)
+- JWT brute-force running on FTD VM (PID 11039): /tmp/_jwtbf.py
+  - Scanning transaction log for all 16-byte candidates
+  - Oracle: invalid Bearer token from localhost → 401; valid → 200
+  - Output: /tmp/_jwtbf.out
+- Alternative path: short-string decode from neostore.propertystore.db (Neo4j 3.x 41-byte records)
+
+### F-FTD-108: Telegraf Metrics — Module Written, Pending Commit
+- Live confirmed: http://127.0.0.1:9273/metrics returns uuid="2fe3bd28-9c3b-11f1-8c75-98cd2be24485"
+- Module: ftd_telegraf_metrics_unauth.py
 
 ### Pending Ablation Modules
 - F-FTD-98 enhancement: sweep mode for eventing paths + VPN config read
